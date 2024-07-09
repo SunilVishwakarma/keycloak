@@ -19,6 +19,7 @@ package org.keycloak.connections.jpa.updater.liquibase.custom;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import liquibase.exception.CustomChangeException;
@@ -26,6 +27,7 @@ import liquibase.statement.core.InsertStatement;
 import liquibase.statement.core.RawSqlStatement;
 import liquibase.statement.core.UpdateStatement;
 import liquibase.structure.core.Table;
+import org.apache.commons.collections4.IterableUtils;
 import org.keycloak.models.Constants;
 
 public class JpaUpdate13_0_0_MigrateDefaultRoles extends CustomKeycloakTask {
@@ -44,39 +46,63 @@ public class JpaUpdate13_0_0_MigrateDefaultRoles extends CustomKeycloakTask {
         for (Map.Entry<String, String> entry : realmIdsAndNames.entrySet()) {
             String id = UUID.randomUUID().toString();
             String roleName = determineDefaultRoleName(entry.getKey(), entry.getValue());
-            statements.add(
-                // create new default role
-                new InsertStatement(null, null, database.correctObjectName("KEYCLOAK_ROLE", Table.class))
-                    .addColumnValue("ID", id)
-                    .addColumnValue("CLIENT_REALM_CONSTRAINT", entry.getKey())
-                    .addColumnValue("CLIENT_ROLE", Boolean.FALSE)
-                    .addColumnValue("DESCRIPTION", "${role_" + roleName + "}")
-                    .addColumnValue("NAME", roleName)
-                    .addColumnValue("REALM_ID", entry.getKey())
-                    .addColumnValue("REALM", entry.getKey())
-            );
-            statements.add(
-                // assign the role to the realm
-                new UpdateStatement(null, null, database.correctObjectName("REALM", Table.class))
-                    .addNewColumnValue("DEFAULT_ROLE", id)
-                    .setWhereClause("REALM.ID=?")
-                    .addWhereParameter(entry.getKey())
-            );
 
-            statements.add(
-                // copy data from REALM_DEFAULT_ROLES to COMPOSITE_ROLE
-                new RawSqlStatement("INSERT INTO " + compositeRoleTable + " (COMPOSITE, CHILD_ROLE) " +
-                        "SELECT '" + id + "', ROLE_ID FROM " + getTableName("REALM_DEFAULT_ROLES") +
-                        " WHERE REALM_ID = '" + database.escapeStringForDatabase(entry.getKey()) + "'")
-            );
-            statements.add(
-                // copy data from CLIENT_DEFAULT_ROLES to COMPOSITE_ROLE
-                new RawSqlStatement("INSERT INTO " + compositeRoleTable + " (COMPOSITE, CHILD_ROLE) " +
-                        "SELECT '" + id + "', " + clientDefaultRolesTable + ".ROLE_ID FROM " + 
-                        clientDefaultRolesTable + " INNER JOIN " + clientTable + " ON " + 
-                        clientTable + ".ID = " + clientDefaultRolesTable + ".CLIENT_ID AND " +
-                        clientTable + ".REALM_ID = '" + database.escapeStringForDatabase(entry.getKey()) + "'")
-            );
+            InsertStatement duplicateComponent = (InsertStatement) IterableUtils.find(statements,
+                    ss -> {
+                        if(ss instanceof InsertStatement) {
+                            InsertStatement is = (InsertStatement) ss;
+                            return "KEYCLOAK_ROLE".equals(is.getTableName()) && roleName.equals(is.getColumnValues().get("NAME"))  && entry.getKey().equals(is.getColumnValues().get("CLIENT_REALM_CONSTRAINT"));
+                        }
+                        return false;
+                    });
+
+            if(duplicateComponent == null)
+                statements.add(
+                    // create new default role
+                    new InsertStatement(null, null, database.correctObjectName("KEYCLOAK_ROLE", Table.class))
+                        .addColumnValue("ID", id)
+                        .addColumnValue("CLIENT_REALM_CONSTRAINT", entry.getKey())
+                        .addColumnValue("CLIENT_ROLE", Boolean.FALSE)
+                        .addColumnValue("DESCRIPTION", "${role_" + roleName + "}")
+                        .addColumnValue("NAME", roleName)
+                        .addColumnValue("REALM_ID", entry.getKey())
+                        .addColumnValue("REALM", entry.getKey())
+                );
+
+            InsertStatement insertRoleComponent = (InsertStatement) IterableUtils.find(statements,
+                    ss -> {
+                        if(ss instanceof InsertStatement) {
+                            InsertStatement is = (InsertStatement) ss;
+                            return "KEYCLOAK_ROLE".equals(is.getTableName()) && id.equals(is.getColumnValues().get("ID"));
+                        }
+                        return false;
+                    });
+
+            //Iff role with the id is inserted then execute below statements
+            if(insertRoleComponent != null) {
+                statements.add(
+                        // assign the role to the realm
+                        new UpdateStatement(null, null, database.correctObjectName("REALM", Table.class))
+                                .addNewColumnValue("DEFAULT_ROLE", id)
+                                .setWhereClause("REALM.ID=?")
+                                .addWhereParameter(entry.getKey())
+                );
+
+                statements.add(
+                        // copy data from REALM_DEFAULT_ROLES to COMPOSITE_ROLE
+                        new RawSqlStatement("INSERT INTO " + compositeRoleTable + " (COMPOSITE, CHILD_ROLE) " +
+                                "SELECT '" + id + "', ROLE_ID FROM " + getTableName("REALM_DEFAULT_ROLES") +
+                                " WHERE REALM_ID = '" + database.escapeStringForDatabase(entry.getKey()) + "'")
+                );
+                statements.add(
+                        // copy data from CLIENT_DEFAULT_ROLES to COMPOSITE_ROLE
+                        new RawSqlStatement("INSERT INTO " + compositeRoleTable + " (COMPOSITE, CHILD_ROLE) " +
+                                "SELECT '" + id + "', " + clientDefaultRolesTable + ".ROLE_ID FROM " +
+                                clientDefaultRolesTable + " INNER JOIN " + clientTable + " ON " +
+                                clientTable + ".ID = " + clientDefaultRolesTable + ".CLIENT_ID AND " +
+                                clientTable + ".REALM_ID = '" + database.escapeStringForDatabase(entry.getKey()) + "'")
+                );
+            }
         }
     }
 
