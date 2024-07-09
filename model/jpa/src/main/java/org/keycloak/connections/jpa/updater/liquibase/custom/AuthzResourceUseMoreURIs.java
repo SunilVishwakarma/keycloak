@@ -1,11 +1,15 @@
 package org.keycloak.connections.jpa.updater.liquibase.custom;
 
 import liquibase.exception.CustomChangeException;
+import liquibase.statement.SqlStatement;
 import liquibase.statement.core.InsertStatement;
 import liquibase.structure.core.Table;
+import org.apache.commons.collections4.IterableUtils;
+import org.apache.commons.collections4.Predicate;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.LinkedHashMap;
 
 /**
  * @author mhajas
@@ -27,7 +31,17 @@ public class AuthzResourceUseMoreURIs extends CustomKeycloakTask {
                                 .addColumnValue("RESOURCE_ID", resourceId)
                                 .addColumnValue("VALUE", resourceUri);
 
-                        statements.add(insertComponent);
+                        InsertStatement duplicateComponent = (InsertStatement) IterableUtils.find(statements,
+                                ss -> {
+                                    InsertStatement is = (InsertStatement) ss;
+                                    boolean tableMatched = "RESOURCE_URIS".equals(is.getTableName());
+                                    LinkedHashMap columnValues = (LinkedHashMap) is.getColumnValues();
+                                    boolean valueMatched = resourceId.equals(columnValues.get("RESOURCE_ID")) && resourceUri.equals(columnValues.get("VALUE"));
+                                    return tableMatched && valueMatched;
+                                });
+
+                        if(duplicateComponent == null)
+                            statements.add(insertComponent);
                     }
                 } finally {
                     resultSet.close();
